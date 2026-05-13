@@ -5,7 +5,10 @@ import com.abk.kernel.data.api.GitHubApiService
 import com.abk.kernel.data.api.GitHubAuthService
 import com.abk.kernel.data.api.NetworkClient
 import com.abk.kernel.data.model.*
-import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -25,7 +28,6 @@ class GitHubRepository(
     private var apiService: GitHubApiService? = null
 ) {
     private val clientId = BuildConfig.GITHUB_CLIENT_ID
-    private val gson = Gson()
     private val publicHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -57,6 +59,43 @@ class GitHubRepository(
 
     // ── Module Catalogs ───────────────────────────────────────────────────
 
+    suspend fun fetchExternalModuleMetadata(repositoryUrl: String): Result<ExternalModuleMetadata> =
+        withContext(Dispatchers.IO) {
+            val candidates = externalModuleConfCandidates(repositoryUrl)
+            if (candidates.isEmpty()) {
+                return@withContext Result.Error("模块仓库链接格式不支持")
+            }
+
+            var lastError = ""
+            for (confUrl in candidates) {
+                val request = Request.Builder()
+                    .url(confUrl)
+                    .header("Accept", "text/plain,*/*")
+                    .build()
+                val response = runCatching { publicHttpClient.newCall(request).execute() }
+                    .getOrElse {
+                        lastError = it.message ?: "网络请求失败"
+                        null
+                    } ?: continue
+
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        lastError = "HTTP ${resp.code}"
+                        return@use
+                    }
+
+                    val body = resp.body?.string().orEmpty()
+                    return@withContext runCatching { parseExternalModuleConf(body) }
+                        .fold(
+                            onSuccess = { Result.Success(it) },
+                            onFailure = { Result.Error("module.conf 无效: ${it.message ?: "格式错误"}") }
+                        )
+                }
+            }
+
+            Result.Error("无法读取 module.conf: $lastError")
+        }
+
     suspend fun fetchModuleCatalog(repositoryUrl: String): Result<ModuleCatalogFetchResult> =
         withContext(Dispatchers.IO) {
             val candidates = moduleCatalogIndexCandidates(repositoryUrl)
@@ -83,23 +122,18 @@ class GitHubRepository(
                     }
 
                     val body = resp.body?.string().orEmpty()
-                    val raw = runCatching { gson.fromJson(body, RawModuleCatalogDocument::class.java) }
+                    val catalog = runCatching { parseModuleCatalogDocument(body, repositoryUrl) }
                         .getOrElse {
                             lastError = "JSON 解析失败: ${it.message ?: "格式错误"}"
                             return@use
                         }
 
-                    val modules = raw.modules.orEmpty().mapNotNull(::sanitizeCatalogItem)
-                        .distinctBy { it.repoUrl.trim().lowercase() }
-                    val skipped = raw.modules.orEmpty().size - modules.size
-                    val name = raw.name?.trim().orEmpty().ifBlank { repositoryUrl.toCatalogFallbackName() }
-
                     return@withContext Result.Success(
                         ModuleCatalogFetchResult(
-                            name = name,
+                            name = catalog.name,
                             indexUrl = indexUrl,
-                            modules = modules,
-                            skippedCount = skipped.coerceAtLeast(0)
+                            modules = catalog.modules,
+                            skippedCount = catalog.skippedCount
                         )
                     )
                 }
@@ -421,6 +455,28 @@ class GitHubRepository(
         return emptyList()
     }
 
+    private fun externalModuleConfCandidates(repositoryUrl: String): List<String> {
+        val clean = repositoryUrl.trim().trimEnd('/')
+        if (clean.isBlank()) return emptyList()
+        if (clean.endsWith("/module.conf", ignoreCase = true)) return listOf(clean)
+        if (clean.startsWith("https://raw.githubusercontent.com/")) {
+            return listOf("$clean/module.conf")
+        }
+
+        parseGithubRepository(clean)?.let { github ->
+            val branches = if (github.branch.isNullOrBlank()) {
+                listOf("main", "master")
+            } else {
+                listOf(github.branch)
+            }
+            return branches.map { branch ->
+                "https://raw.githubusercontent.com/${github.owner}/${github.repo}/$branch/module.conf"
+            }
+        }
+
+        return emptyList()
+    }
+
     private fun parseGithubRepository(url: String): GithubRepositoryParts? {
         val cleaned = url.trim().trimEnd('/')
         val path = when {
@@ -443,28 +499,106 @@ class GitHubRepository(
         return GithubRepositoryParts(owner, repo, branch)
     }
 
-    private fun sanitizeCatalogItem(raw: RawModuleCatalogItem): ModuleCatalogItem? {
-        val repoUrl = raw.repoUrl?.trim().orEmpty()
+    private fun parseModuleCatalogDocument(body: String, repositoryUrl: String): ParsedModuleCatalogDocument {
+        val root = JsonParser.parseString(body)
+        val document = root.asJsonObjectOrNull() ?: error("根节点必须是 JSON 对象")
+        val rawModules = document.arrayOrEmpty("modules")
+        val modules = rawModules.mapNotNull { element ->
+            element.asJsonObjectOrNull()?.let(::sanitizeCatalogItem)
+        }.distinctBy { it.repoUrl.trim().lowercase() }
+        return ParsedModuleCatalogDocument(
+            name = document.stringOrEmpty("name").ifBlank { repositoryUrl.toCatalogFallbackName() },
+            modules = modules,
+            skippedCount = (rawModules.size() - modules.size).coerceAtLeast(0)
+        )
+    }
+
+    private fun sanitizeCatalogItem(raw: JsonObject): ModuleCatalogItem? {
+        val repoUrl = raw.stringOrEmpty("repoUrl")
         if (repoUrl.isBlank()) return null
-        val supportedStages = raw.supportedStages.orEmpty()
+        val supportedStages = raw.stringList("supportedStages")
             .map { CustomExternalModuleStage.normalize(it) }
             .distinct()
             .ifEmpty { listOf(CustomExternalModuleStage.AFTER_PATCH) }
-        val defaultStage = CustomExternalModuleStage.normalize(raw.defaultStage.orEmpty())
+        val defaultStage = CustomExternalModuleStage.normalize(raw.stringOrEmpty("defaultStage"))
             .takeIf { it in supportedStages }
             ?: supportedStages.first()
 
         return ModuleCatalogItem(
-            name = raw.name?.trim().orEmpty().ifBlank { repoUrl.toCatalogFallbackName() },
-            version = raw.version?.trim().orEmpty(),
-            description = raw.description?.trim().orEmpty(),
+            name = raw.stringOrEmpty("name").ifBlank { repoUrl.toCatalogFallbackName() },
+            version = raw.stringOrEmpty("version"),
+            description = raw.stringOrEmpty("description"),
             repoUrl = repoUrl,
             defaultStage = defaultStage,
             supportedStages = supportedStages,
-            author = raw.author?.trim().orEmpty(),
-            homepage = raw.homepage?.trim().orEmpty()
+            author = raw.stringOrEmpty("author"),
+            homepage = raw.stringOrEmpty("homepage")
         )
     }
+
+    private fun parseExternalModuleConf(body: String): ExternalModuleMetadata {
+        val values = parseShellLikeConf(body)
+        val name = values["ABK_MODULE_NAME"].orEmpty().trim()
+        if (name.isBlank()) error("缺少 ABK_MODULE_NAME")
+        val supportedStages = values["ABK_MODULE_SUPPORTED_STAGES"]
+            ?.takeIf { it.isNotBlank() }
+            ?.split(',')
+            ?.map { CustomExternalModuleStage.normalize(it) }
+            ?.distinct()
+            .orEmpty()
+            .ifEmpty { CustomExternalModuleStage.options }
+        return ExternalModuleMetadata(
+            name = name,
+            version = values["ABK_MODULE_VERSION"].orEmpty().trim(),
+            description = values["ABK_MODULE_DESCRIPTION"].orEmpty().trim(),
+            supportedStages = supportedStages
+        )
+    }
+
+    private fun parseShellLikeConf(body: String): Map<String, String> =
+        body.lineSequence()
+            .mapNotNull { line ->
+                val clean = line.substringBefore('#').trim()
+                if (clean.isBlank() || '=' !in clean) return@mapNotNull null
+                val key = clean.substringBefore('=').trim()
+                val value = clean.substringAfter('=').trim().trimShellQuotes()
+                if (key.isBlank()) null else key to value
+            }
+            .toMap()
+
+    private fun String.trimShellQuotes(): String {
+        val clean = trim()
+        return if (clean.length >= 2 &&
+            ((clean.first() == '"' && clean.last() == '"') || (clean.first() == '\'' && clean.last() == '\''))
+        ) {
+            clean.substring(1, clean.length - 1)
+        } else {
+            clean
+        }
+    }
+
+    private fun JsonElement.asJsonObjectOrNull(): JsonObject? =
+        takeIf { it.isJsonObject }?.asJsonObject
+
+    private fun JsonObject.stringOrEmpty(name: String): String =
+        get(name)
+            ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+            ?.asString
+            ?.trim()
+            .orEmpty()
+
+    private fun JsonObject.stringList(name: String): List<String> =
+        get(name)
+            ?.takeIf { !it.isJsonNull && it.isJsonArray }
+            ?.asJsonArray
+            ?.mapNotNull { element ->
+                element.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+            }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+
+    private fun JsonObject.arrayOrEmpty(name: String): JsonArray =
+        get(name)?.takeIf { !it.isJsonNull && it.isJsonArray }?.asJsonArray ?: JsonArray()
 
     private fun String.toCatalogFallbackName(): String = trim()
         .trimEnd('/')
@@ -484,18 +618,8 @@ private data class GithubRepositoryParts(
     val branch: String?
 )
 
-private data class RawModuleCatalogDocument(
-    val name: String? = null,
-    val modules: List<RawModuleCatalogItem>? = null
-)
-
-private data class RawModuleCatalogItem(
-    val name: String? = null,
-    val version: String? = null,
-    val description: String? = null,
-    val repoUrl: String? = null,
-    val defaultStage: String? = null,
-    val supportedStages: List<String>? = null,
-    val author: String? = null,
-    val homepage: String? = null
+private data class ParsedModuleCatalogDocument(
+    val name: String,
+    val modules: List<ModuleCatalogItem>,
+    val skippedCount: Int
 )
