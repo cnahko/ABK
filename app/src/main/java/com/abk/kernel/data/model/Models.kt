@@ -428,6 +428,35 @@ data class AbkRuntimeModule(
     @SerializedName("kpm_args") val kpmArgs: String = ""
 )
 
+enum class ManagerSettingKind {
+    SWITCH,
+    MODE,
+    NAVIGATION
+}
+
+enum class ManagerSettingStatus {
+    SUPPORTED,
+    UNSUPPORTED,
+    MANAGED
+}
+
+data class ManagerSettingItem(
+    val id: String = "",
+    val title: String = "",
+    val subtitle: String = "",
+    val kind: ManagerSettingKind = ManagerSettingKind.SWITCH,
+    val checked: Boolean = false,
+    val selectedIndex: Int = 0,
+    val options: List<String> = emptyList(),
+    val enabled: Boolean = true,
+    val status: ManagerSettingStatus = ManagerSettingStatus.SUPPORTED
+)
+
+data class AppProfileTemplateItem(
+    val id: String = "",
+    val content: String = ""
+)
+
 data class RootGrantApp(
     val packageName: String = "",
     val label: String = "",
@@ -461,6 +490,26 @@ data class BuildPlan(
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
+
+data class BuildQueueItem(
+    val id: String = "",
+    val name: String = "",
+    val config: KernelBuildConfig = KernelBuildConfig(),
+    val createdAt: Long = 0L,
+    val status: BuildQueueItemStatus = BuildQueueItemStatus.PENDING,
+    val runId: Long = 0L,
+    val runNumber: Int = 0,
+    val error: String? = null
+)
+
+enum class BuildQueueItemStatus {
+    PENDING,
+    DISPATCHING,
+    RUNNING,
+    DONE,
+    FAILED,
+    CANCELLED
+}
 
 data class DownloadedArtifact(
     val id: Long,
