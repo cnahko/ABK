@@ -373,8 +373,20 @@ data class AbkRuntimeStatus(
     val schema: Int = 1,
     @SerializedName("abk_version") val abkVersion: String = "",
     @SerializedName("abk_commit") val abkCommit: String = "",
+    val manager: AbkRuntimeManagerInfo? = null,
+    @SerializedName("runtime_backend") val runtimeBackend: AbkRuntimeManagerInfo? = null,
     val build: AbkRuntimeBuildInfo? = null,
     val modules: List<AbkRuntimeModule> = emptyList()
+)
+
+data class AbkRuntimeManagerInfo(
+    @SerializedName("display_name") val displayName: String = "",
+    val variant: String = "",
+    val backend: String = "",
+    val version: String = "",
+    val active: Boolean = false,
+    val capabilities: List<String> = emptyList(),
+    val diagnostics: List<String> = emptyList()
 )
 
 data class AbkRuntimeBuildInfo(
@@ -395,12 +407,51 @@ data class AbkRuntimeBuildInfo(
 data class AbkRuntimeModule(
     val id: String = "",
     val name: String = "",
+    val author: String = "",
+    val type: String = "",
     val version: String = "",
+    @SerializedName("version_code") val versionCode: Long = 0L,
     val description: String = "",
     @SerializedName("repo_url") val repoUrl: String = "",
     val stage: String = "",
+    val source: String = "",
+    @SerializedName("module_dir") val moduleDir: String = "",
+    @SerializedName("web_root") val webRoot: String = "",
+    val readonly: Boolean = false,
     val controllable: Boolean = false,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val update: Boolean = false,
+    val remove: Boolean = false,
+    @SerializedName("has_web_ui") val hasWebUi: Boolean = false,
+    @SerializedName("has_action_script") val hasActionScript: Boolean = false,
+    @SerializedName("action_supported") val actionSupported: Boolean = false,
+    @SerializedName("kpm_args") val kpmArgs: String = ""
+)
+
+data class RootGrantApp(
+    val packageName: String = "",
+    val label: String = "",
+    val uid: Int = 0,
+    val userName: String = "",
+    val isSystemApp: Boolean = false,
+    val profile: RootGrantProfile = RootGrantProfile()
+)
+
+data class RootGrantProfile(
+    val name: String = "",
+    val currentUid: Int = 0,
+    val allowSu: Boolean = false,
+    val rootUseDefault: Boolean = true,
+    val rootTemplate: String = "",
+    val uid: Int = 0,
+    val gid: Int = 0,
+    val groups: List<Int> = emptyList(),
+    val capabilities: List<Int> = emptyList(),
+    val context: String = "u:r:ksu:s0",
+    val namespace: Int = 0,
+    val nonRootUseDefault: Boolean = true,
+    val umountModules: Boolean = true,
+    val rules: String = ""
 )
 
 data class BuildPlan(
