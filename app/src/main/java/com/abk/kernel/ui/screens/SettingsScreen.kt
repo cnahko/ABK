@@ -9,16 +9,11 @@ import android.os.Build
 import android.os.Environment
 import android.provider.Settings
 import android.widget.Toast
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,7 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -47,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import coil.compose.AsyncImage
@@ -55,6 +50,12 @@ import com.abk.kernel.R
 import com.abk.kernel.utils.DownloadDirectoryUtils
 import com.abk.kernel.utils.LocaleHelper
 import com.abk.kernel.ui.components.AbkScreenHorizontalPadding
+import com.abk.kernel.ui.components.ObserveChildPageVisibility
+import com.abk.kernel.ui.components.childPageOverlayEnterTransition
+import com.abk.kernel.ui.components.childPageOverlayExitTransition
+import com.abk.kernel.ui.components.childPageScrimExitTransition
+import com.abk.kernel.ui.components.rememberChildPageBackController
+import com.abk.kernel.ui.components.rememberChildPageOverlayTransition
 import com.abk.kernel.ui.components.ExpressiveHeroCard
 import com.abk.kernel.ui.components.ExpressiveListItem
 import com.abk.kernel.ui.components.ExpressiveSectionCard
@@ -62,22 +63,11 @@ import com.abk.kernel.ui.components.ExpressiveStatusChip
 import com.abk.kernel.ui.components.ExpressiveSwitchItem
 import com.abk.kernel.ui.components.ExpressiveTopBar
 import com.abk.kernel.ui.theme.uiSurfaceColor
+import com.abk.kernel.data.repository.PreferencesRepository
 import com.abk.kernel.data.model.ManagerSettingItem
 import com.abk.kernel.data.model.ManagerSettingKind
 import com.abk.kernel.viewmodel.MainUiState
 import com.abk.kernel.viewmodel.MainViewModel
-import kotlin.math.pow
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
-
-private const val THEME_BACK_VISUAL_EXPONENT = 1.8f
-private const val THEME_BACK_SCALE_DELTA = 0.09f
-private const val THEME_BACK_SCRIM_ALPHA = 0.32f
-private const val THEME_PAGE_EXIT_DELAY_MS = 280L
-private val THEME_BACK_MAX_OFFSET = 56.dp
-private val THEME_BACK_MAX_CORNER = 32.dp
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SettingsScreen(
@@ -95,21 +85,13 @@ fun SettingsScreen(
     var showAboutPage by rememberSaveable { mutableStateOf(false) }
     var showOpenSourceLicenses by rememberSaveable { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
-    var themeBackProgress by remember { mutableFloatStateOf(0f) }
     val showChildPage = showThemeSettings || showAppProfileTemplates || showManagerTools ||
         showAboutPage || showOpenSourceLicenses
-    val motionScheme = MaterialTheme.motionScheme
-    val animatedThemeBackProgress by animateFloatAsState(
-        targetValue = themeBackProgress.coerceIn(0f, 1f),
-        animationSpec = motionScheme.fastSpatialSpec(),
-        label = "settings-theme-back-progress"
+    val childPageTransition = rememberChildPageOverlayTransition(
+        visible = showChildPage,
+        label = "settings-child-page"
     )
-    val visualThemeBackProgress = animatedThemeBackProgress
-        .coerceIn(0f, 1f)
-        .pow(THEME_BACK_VISUAL_EXPONENT)
-    val density = LocalDensity.current
-    val themeBackOffsetPx = with(density) { THEME_BACK_MAX_OFFSET.toPx() }
-    val themeBackCorner = with(density) { (THEME_BACK_MAX_CORNER.toPx() * visualThemeBackProgress).toDp() }
+    val motionScheme = MaterialTheme.motionScheme
 
     LaunchedEffect(Unit) {
         vm.refreshManagerSettings(force = true)
@@ -122,23 +104,32 @@ fun SettingsScreen(
         }
     }
 
-    LaunchedEffect(showChildPage) {
-        if (showChildPage) {
-            onThemePageVisibleChange(true)
-        } else {
-            delay(THEME_PAGE_EXIT_DELAY_MS)
-            themeBackProgress = 0f
-            onThemePageVisibleChange(false)
-        }
+    fun closeChildPage() {
+        showThemeSettings = false
+        showAppProfileTemplates = false
+        showManagerTools = false
+        showAboutPage = false
+        showOpenSourceLicenses = false
     }
+
+    val childPageBack = rememberChildPageBackController(
+        enabled = showChildPage,
+        predictiveBackEnabled = state.predictiveBackEnabled,
+        onBack = ::closeChildPage,
+    )
+
+    ObserveChildPageVisibility(
+        transition = childPageTransition,
+        onVisibleChange = onThemePageVisibleChange,
+        onAfterExitAnimation = { childPageBack.resetProgress() }
+    )
 
     DisposableEffect(Unit) {
         onDispose { onThemePageVisibleChange(false) }
     }
 
     fun openThemeSettings() {
-        themeBackProgress = 0f
-        onThemePageVisibleChange(true)
+        childPageBack.resetProgress()
         showAppProfileTemplates = false
         showManagerTools = false
         showAboutPage = false
@@ -146,13 +137,8 @@ fun SettingsScreen(
         showThemeSettings = true
     }
 
-    fun closeThemeSettings() {
-        showThemeSettings = false
-    }
-
     fun openAppProfileTemplates() {
-        themeBackProgress = 0f
-        onThemePageVisibleChange(true)
+        childPageBack.resetProgress()
         showThemeSettings = false
         showManagerTools = false
         showAboutPage = false
@@ -162,8 +148,7 @@ fun SettingsScreen(
     }
 
     fun openManagerTools() {
-        themeBackProgress = 0f
-        onThemePageVisibleChange(true)
+        childPageBack.resetProgress()
         showThemeSettings = false
         showAppProfileTemplates = false
         showAboutPage = false
@@ -173,8 +158,7 @@ fun SettingsScreen(
     }
 
     fun openAboutPage() {
-        themeBackProgress = 0f
-        onThemePageVisibleChange(true)
+        childPageBack.resetProgress()
         showThemeSettings = false
         showAppProfileTemplates = false
         showManagerTools = false
@@ -183,36 +167,12 @@ fun SettingsScreen(
     }
 
     fun openOpenSourceLicenses() {
-        themeBackProgress = 0f
-        onThemePageVisibleChange(true)
+        childPageBack.resetProgress()
         showThemeSettings = false
         showAppProfileTemplates = false
         showManagerTools = false
         showAboutPage = false
         showOpenSourceLicenses = true
-    }
-
-    fun closeChildPage() {
-        showThemeSettings = false
-        showAppProfileTemplates = false
-        showManagerTools = false
-        showAboutPage = false
-        showOpenSourceLicenses = false
-    }
-
-    PredictiveBackHandler(enabled = showChildPage && state.predictiveBackEnabled) { progress ->
-        try {
-            progress.collect { backEvent ->
-                themeBackProgress = backEvent.progress.coerceIn(0f, 1f)
-            }
-            closeChildPage()
-        } catch (_: CancellationException) {
-            themeBackProgress = 0f
-        }
-    }
-
-    BackHandler(enabled = showChildPage && !state.predictiveBackEnabled) {
-        closeChildPage()
     }
 
     if (showLogoutDialog) {
@@ -265,38 +225,29 @@ fun SettingsScreen(
             )
         }
 
-        AnimatedVisibility(
-            visible = showChildPage,
+        childPageTransition.AnimatedVisibility(
+            visible = { it },
             enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()),
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()),
+            exit = childPageScrimExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = THEME_BACK_SCRIM_ALPHA * visualThemeBackProgress))
+                    .background(Color.Black.copy(alpha = childPageBack.scrimAlpha))
             )
         }
 
-        AnimatedVisibility(
-            visible = showThemeSettings,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        childPageTransition.AnimatedVisibility(
+            visible = { it && showThemeSettings },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = themeBackOffsetPx * visualThemeBackProgress
-                        scaleX = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        scaleY = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        alpha = 1f - 0.06f * visualThemeBackProgress
-                        shape = RoundedCornerShape(themeBackCorner)
-                        clip = visualThemeBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 SettingsPageBackground(
                     backgroundUri = state.customBackgroundUri,
@@ -308,7 +259,7 @@ fun SettingsScreen(
                         ExpressiveTopBar(
                             title = stringResource(R.string.settings_theme),
                             navigationIcon = {
-                                IconButton(onClick = ::closeThemeSettings) {
+                                IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             }
@@ -339,25 +290,16 @@ fun SettingsScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showAppProfileTemplates,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        childPageTransition.AnimatedVisibility(
+            visible = { it && showAppProfileTemplates },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = themeBackOffsetPx * visualThemeBackProgress
-                        scaleX = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        scaleY = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        alpha = 1f - 0.06f * visualThemeBackProgress
-                        shape = RoundedCornerShape(themeBackCorner)
-                        clip = visualThemeBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 SettingsPageBackground(
                     backgroundUri = state.customBackgroundUri,
@@ -369,7 +311,7 @@ fun SettingsScreen(
                         ExpressiveTopBar(
                             title = stringResource(R.string.settings_app_profile_templates),
                             navigationIcon = {
-                                IconButton(onClick = ::closeChildPage) {
+                                IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
@@ -393,25 +335,16 @@ fun SettingsScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showManagerTools,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        childPageTransition.AnimatedVisibility(
+            visible = { it && showManagerTools },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = themeBackOffsetPx * visualThemeBackProgress
-                        scaleX = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        scaleY = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        alpha = 1f - 0.06f * visualThemeBackProgress
-                        shape = RoundedCornerShape(themeBackCorner)
-                        clip = visualThemeBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 SettingsPageBackground(
                     backgroundUri = state.customBackgroundUri,
@@ -423,7 +356,7 @@ fun SettingsScreen(
                         ExpressiveTopBar(
                             title = stringResource(R.string.settings_tools),
                             navigationIcon = {
-                                IconButton(onClick = ::closeChildPage) {
+                                IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             },
@@ -446,25 +379,16 @@ fun SettingsScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showAboutPage,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        childPageTransition.AnimatedVisibility(
+            visible = { it && showAboutPage },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = themeBackOffsetPx * visualThemeBackProgress
-                        scaleX = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        scaleY = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        alpha = 1f - 0.06f * visualThemeBackProgress
-                        shape = RoundedCornerShape(themeBackCorner)
-                        clip = visualThemeBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 SettingsPageBackground(
                     backgroundUri = state.customBackgroundUri,
@@ -476,7 +400,7 @@ fun SettingsScreen(
                         ExpressiveTopBar(
                             title = stringResource(R.string.settings_about_title),
                             navigationIcon = {
-                                IconButton(onClick = ::closeChildPage) {
+                                IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             }
@@ -492,25 +416,16 @@ fun SettingsScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showOpenSourceLicenses,
-            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
-                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
-            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
-                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+        childPageTransition.AnimatedVisibility(
+            visible = { it && showOpenSourceLicenses },
+            enter = childPageOverlayEnterTransition(state.predictiveBackEnabled, motionScheme),
+            exit = childPageOverlayExitTransition(state.predictiveBackEnabled, motionScheme),
             modifier = childPageModifier
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer {
-                        translationX = themeBackOffsetPx * visualThemeBackProgress
-                        scaleX = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        scaleY = 1f - THEME_BACK_SCALE_DELTA * visualThemeBackProgress
-                        alpha = 1f - 0.06f * visualThemeBackProgress
-                        shape = RoundedCornerShape(themeBackCorner)
-                        clip = visualThemeBackProgress > 0.01f
-                    }
+                    .then(childPageBack.backTransformModifier())
             ) {
                 SettingsPageBackground(
                     backgroundUri = state.customBackgroundUri,
@@ -522,7 +437,7 @@ fun SettingsScreen(
                         ExpressiveTopBar(
                             title = stringResource(R.string.settings_open_source_licenses),
                             navigationIcon = {
-                                IconButton(onClick = ::closeChildPage) {
+                                IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.settings_back))
                                 }
                             }
@@ -619,10 +534,18 @@ private fun SettingsMainContent(
                         }
                     }
                 )
+                val forkUrl = state.forkRepo?.let { repo ->
+                    repo.htmlUrl.takeIf { it.isNotBlank() } ?: "https://github.com/${repo.fullName}"
+                }
+                val openCtx = LocalContext.current
+                val onForkClick: (() -> Unit)? = if (forkUrl != null) {
+                    { openUrl(openCtx, forkUrl) }
+                } else null
                 ExpressiveListItem(
                     title = stringResource(R.string.settings_fork_repo),
                     subtitle = state.forkRepo?.fullName ?: stringResource(R.string.settings_waiting_fork),
-                    leadingIcon = Icons.Default.ForkRight
+                    leadingIcon = Icons.Default.ForkRight,
+                    onClick = onForkClick
                 )
             } ?: ExpressiveListItem(
                 title = stringResource(R.string.settings_not_logged_in),
@@ -631,6 +554,23 @@ private fun SettingsMainContent(
         }
 
         SettingsGroup(title = stringResource(R.string.settings_build)) {
+            SwitchSettingsItem(
+                icon = Icons.Default.Sync,
+                title = stringResource(R.string.settings_workflow_foreground_refresh),
+                subtitle = stringResource(R.string.settings_workflow_foreground_refresh_desc),
+                checked = state.workflowForegroundRefreshEnabled,
+                onCheckedChange = { vm.setWorkflowForegroundRefreshEnabled(it) }
+            )
+            AnimatedVisibility(
+                visible = state.workflowForegroundRefreshEnabled,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                WorkflowForegroundRefreshIntervalPicker(
+                    selectedSec = state.workflowForegroundRefreshIntervalSec,
+                    onSelect = { vm.setWorkflowForegroundRefreshIntervalSec(it) }
+                )
+            }
             SwitchSettingsItem(
                 icon = Icons.Default.Download,
                 title = stringResource(R.string.settings_auto_download),
@@ -1635,10 +1575,12 @@ private fun contributors(): List<AboutContributor> = listOf(
     AboutContributor("Fede2782"),
     AboutContributor("FixeQyt"),
     AboutContributor("FunLay123"),
+    AboutContributor("gsf114"),
     AboutContributor("guruji-byte"),
     AboutContributor("huime180"),
     AboutContributor("liqideqq"),
     AboutContributor("LX200944"),
+    AboutContributor("Mazha0309"),
     AboutContributor("MiRinChan"),
     AboutContributor("prpjzz"),
     AboutContributor("ReeViiS69"),
@@ -1659,7 +1601,7 @@ private fun openSourceNoticeGroups(): List<OpenSourceNoticeGroup> = listOf(
     OpenSourceNoticeGroup(
         R.string.settings_license_group_repository,
         listOf(
-            OpenSourceNotice("AnyBase Kernel", "GPL-2.0", "LICENSE", sourceRepoUrl()),
+            OpenSourceNotice("AnyBase Kernel", "GPL-3.0", "LICENSE", sourceRepoUrl()),
             OpenSourceNotice("ABK Control native bridge", "GPL-2.0", "app/src/main/cpp/uapi/abk_control.h"),
             OpenSourceNotice("xingguang DDK module", "GPL", "ddk/xingguang-ddk/xingguang_ddk.c"),
             OpenSourceNotice("DDK kernel API patch", "GPL-2.0", "ddk/patches/xingguang-ddk/0001-xingguang-ddk-api.patch"),
@@ -1676,6 +1618,7 @@ private fun openSourceNoticeGroups(): List<OpenSourceNoticeGroup> = listOf(
             OpenSourceNotice("Xiaomichael/kernel_manifest", "Upstream repository license / no SPDX detected", "OnePlus manifest branch source", "https://github.com/Xiaomichael/kernel_manifest"),
             OpenSourceNotice("Xiaomichael/kernel_patches", "Upstream repository license / no SPDX detected", "OnePlus patch source", "https://github.com/Xiaomichael/kernel_patches"),
             OpenSourceNotice("KernelSU", "GPL-3.0", "workflow setup.sh source", "https://github.com/tiann/KernelSU"),
+            OpenSourceNotice("KernelSU Next", "GPL-3.0", "workflow setup.sh source", "https://github.com/KernelSU-Next/KernelSU-Next"),
             OpenSourceNotice("SukiSU Ultra", "GPL-3.0", "kernel setup, ksud, android_bootimg", "https://github.com/SukiSU-Ultra/SukiSU-Ultra"),
             OpenSourceNotice("ReSukiSU", "GPL-3.0", "workflow setup.sh source", "https://github.com/ReSukiSU/ReSukiSU"),
             OpenSourceNotice("SUSFS", "GPL-2.0", "kernel patches and module integration", "https://gitlab.com/simonpunk/susfs4ksu"),
@@ -1686,13 +1629,13 @@ private fun openSourceNoticeGroups(): List<OpenSourceNoticeGroup> = listOf(
             OpenSourceNotice("WildKernels/kernel_patches", "GPL-2.0", "NTsync, IPSet, BBR and related patches", "https://github.com/WildKernels/kernel_patches"),
             OpenSourceNotice("cctv18/susfs4oki", "GPL-3.0", "OnePlus/OPPO/Realme SUSFS patch source", "https://github.com/cctv18/susfs4oki"),
             OpenSourceNotice("SukiSU_KernelPatch_patch", "Upstream repository license", "KPM patch source", "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch"),
-            OpenSourceNotice("Action-Build", "Repository license", "workflow integration", "https://github.com/Numbersf/Action-Build"),
-            OpenSourceNotice("sidex15/susfs4ksu-module", "Repository license", "SUSFS module build source", "https://github.com/sidex15/susfs4ksu-module"),
+            OpenSourceNotice("Action-Build", "Upstream repository license", "workflow integration", "https://github.com/Numbersf/Action-Build"),
+            OpenSourceNotice("sidex15/susfs4ksu-module", "Upstream repository license", "SUSFS module build source", "https://github.com/sidex15/susfs4ksu-module"),
             OpenSourceNotice("LineageOS GCC prebuilts", "GPL-family toolchain notices", "workflow toolchain source", "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1"),
-            OpenSourceNotice("Baseband Guard", "Repository license", "workflow setup source", "https://github.com/vc-teahouse/Baseband-guard"),
-            OpenSourceNotice("Re-Kernel", "Repository license", "workflow patch source", "https://github.com/Sakion-Team/Re-Kernel"),
-            OpenSourceNotice("Droidspaces-OSS", "Repository license", "virtualization support patches", "https://github.com/ravindu644/Droidspaces-OSS"),
-            OpenSourceNotice("ABK_repo", "Repository license", "official module catalog", "https://github.com/xingguangcuican6666/ABK_repo")
+            OpenSourceNotice("Baseband Guard", "Upstream repository license", "workflow setup source", "https://github.com/vc-teahouse/Baseband-guard"),
+            OpenSourceNotice("Re-Kernel", "Upstream repository license", "workflow patch source", "https://github.com/Sakion-Team/Re-Kernel"),
+            OpenSourceNotice("Droidspaces-OSS", "Upstream repository license", "virtualization support patches", "https://github.com/ravindu644/Droidspaces-OSS"),
+            OpenSourceNotice("ABK_repo module catalog", "Upstream repository license", "official module catalog", "https://github.com/xingguangcuican6666/ABK_repo")
         )
     ),
     OpenSourceNoticeGroup(
@@ -1962,6 +1905,45 @@ private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> 
         }
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+    }
+}
+
+@Composable
+private fun WorkflowForegroundRefreshIntervalPicker(
+    selectedSec: Int,
+    onSelect: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, end = 8.dp, bottom = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.settings_workflow_foreground_refresh_interval),
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PreferencesRepository.WORKFLOW_FOREGROUND_REFRESH_INTERVALS_SEC.sorted().forEach { sec ->
+                FilterChip(
+                    selected = selectedSec == sec,
+                    onClick = { onSelect(sec) },
+                    label = {
+                        Text(
+                            stringResource(R.string.settings_workflow_foreground_refresh_interval_sec, sec),
+                            maxLines = 1
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
     }
 }
 
